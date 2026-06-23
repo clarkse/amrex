@@ -266,25 +266,51 @@ endfunction ()
 function (set_cuda_architectures _cuda_archs)
 
    set(_archs ${${_cuda_archs}})
-   convert_cuda_archs(_archs)
 
-   include(FindCUDA/select_compute_arch)
-   cuda_select_nvcc_arch_flags(_nvcc_arch_flags ${_archs})
-
-   # Extract architecture number: anything less than 6.0 must go
-   string(REPLACE "-gencode;" "-gencode=" _nvcc_arch_flags "${_nvcc_arch_flags}")
-
-   foreach (_item IN LISTS _nvcc_arch_flags)
-      # Match one time the regex [0-9]+.
-      # [0-9]+ means any number between 0 and 9 will be matched one or more times (option +)
-      string(REGEX MATCH "[0-9]+" _cuda_compute_capability "${_item}")
-
-      if (_cuda_compute_capability LESS 60)
-         message(STATUS "Ignoring unsupported CUDA architecture ${_cuda_compute_capability}")
+   # Compute capability >= 10.0 (Hopper-next / Blackwell: sm_100, sm_103, sm_120, sm_121) cannot be
+   # represented by the deprecated FindCUDA cuda_select_nvcc_arch_flags bundled with CMake, and
+   # convert_cuda_archs() drops it via its `LESS 10` guards -> the list goes empty and the helper
+   # falls back to the newest arch it knows (sm_86), silently mis-building for Blackwell. Route such
+   # archs straight to CMake-native integer CUDA_ARCHITECTURES (e.g. 120), which nvcc >= 12.8
+   # understands, and keep the legacy helper only for older archs / names / "Auto".
+   set(_native_archs)
+   set(_legacy_archs)
+   foreach (_a IN LISTS _archs)
+      string(REGEX REPLACE "\\-real$" "" _a "${_a}")
+      set(_norm "${_a}")
+      if (_norm MATCHES "\\.")
+         string(REPLACE "." "" _norm "${_norm}")  # 12.0 -> 120, 8.6 -> 86
+      endif ()
+      if (_norm MATCHES "^[0-9]+$" AND NOT (_norm LESS 100))
+         list(APPEND _native_archs ${_norm})
       else ()
-         list(APPEND _tmp ${_cuda_compute_capability})
+         list(APPEND _legacy_archs ${_a})
       endif ()
    endforeach ()
+
+   set(_tmp ${_native_archs})
+
+   if (_legacy_archs)
+      convert_cuda_archs(_legacy_archs)
+
+      include(FindCUDA/select_compute_arch)
+      cuda_select_nvcc_arch_flags(_nvcc_arch_flags ${_legacy_archs})
+
+      # Extract architecture number: anything less than 6.0 must go
+      string(REPLACE "-gencode;" "-gencode=" _nvcc_arch_flags "${_nvcc_arch_flags}")
+
+      foreach (_item IN LISTS _nvcc_arch_flags)
+         # Match one time the regex [0-9]+.
+         # [0-9]+ means any number between 0 and 9 will be matched one or more times (option +)
+         string(REGEX MATCH "[0-9]+" _cuda_compute_capability "${_item}")
+
+         if (_cuda_compute_capability LESS 60)
+            message(STATUS "Ignoring unsupported CUDA architecture ${_cuda_compute_capability}")
+         else ()
+            list(APPEND _tmp ${_cuda_compute_capability})
+         endif ()
+      endforeach ()
+   endif ()
 
    set(AMREX_CUDA_ARCHS ${_tmp} CACHE INTERNAL "CUDA archs AMReX is built for")
 
